@@ -4,7 +4,8 @@ import json
 import sys
 import base64
 import time
-
+import logging
+# from bs4 import BeautifulSoup
 
 #********* CONSTANT VARIABLES *********
 PENDINGNUM = 50 # how many pending connections queue will hold
@@ -14,13 +15,18 @@ MAX_DATA_RECV = 999999  # max number of bytes we receive at once
 class ProxyServer(object):
 	def __init__(self, configFilePath):
 		super(ProxyServer, self).__init__()
+		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
+		logging.info('Proxy launched')
 		self.config = json.loads(open(configFilePath).read())
 		try:
 			host = ''
 			self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			logging.info('Creating server socket...')
 			self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			self.s.bind((host, self.config['port']))
+			logging.info('Binding socket to port %s...', self.config['port'])
 			self.s.listen(PENDINGNUM)
+			logging.info('Listening for incoming requests...\n')
 			print self.config['restriction']
 			print "Proxy Server Running on ",host,":",self.config['port']
 		except socket.error, (value, message):
@@ -32,6 +38,7 @@ class ProxyServer(object):
 	def run(self):
 		while True:
 			conn, client_addr = self.s.accept()
+			print client_addr
 			thread.start_new_thread(self.proxyThread, (conn, client_addr))
 		self.s.close()
 
@@ -98,6 +105,11 @@ class ProxyServer(object):
 	def parseRequest():
 		pass
 
+	def inject(self, response):
+		new_tag = soup.new_tag('nav', id='navbar')
+		new_tag['class'] = new_tag.get('class', []) + ['navbar', 'fixed-top', 'bg-dark']
+		soup.body.insert(1, new_tag)
+
 	def proxyThread(self, conn, client_addr):
 		while True:
 			request = conn.recv(MAX_DATA_RECV)
@@ -150,8 +162,8 @@ class ProxyServer(object):
 				webserver_pos = len(temp)
 
 			# print temp[webserver_pos:]
-			version = first_line.split(' ')[2][:len(first_line.split(' ')[2])-2]+'0'
-			newRequest = first_line.split(' ')[0] + ' ' + temp[webserver_pos:] + ' ' + first_line.split(' ')[2] + '\r\n'
+			version = first_line.split(' ')[2][:len(first_line.split(' ')[2])-1]+'0'
+			newRequest = first_line.split(' ')[0] + ' ' + temp[webserver_pos:] + ' ' + version + '\r\n'
 			newRequest = newRequest + ''.join(lines[1:])
 			print newRequest
 
@@ -171,17 +183,18 @@ class ProxyServer(object):
 				# print ("".join(request.split('\n')[1:]))
 				# s.send(request)         # send request to webserver
 				s.send(newRequest)
-
+				print '##############################################################'
 				while 1:
 					# receive data from web server
 					data = s.recv(MAX_DATA_RECV)
-		            
+					print data
 					if (len(data) > 0):
 						# send to browser
 						conn.send(data)
 					else:
 						break
 				s.close()
+				print '##############################################################'
 				print first_line.split(' ')[2]
 				if first_line.split(' ')[2] == 'HTTP/1.0':
 					conn.close()
