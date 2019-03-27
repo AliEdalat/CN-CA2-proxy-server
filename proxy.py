@@ -5,28 +5,94 @@ import sys
 import base64
 import time
 import logging
-# from bs4 import BeautifulSoup
-
+import zlib
+import gzip
+import StringIO
+from bs4 import BeautifulSoup
 #********* CONSTANT VARIABLES *********
 PENDINGNUM = 50 # how many pending connections queue will hold
 MAX_DATA_RECV = 999999  # max number of bytes we receive at once
+
+class Response(object):
+	def __init__(self, response):
+		super(Response, self).__init__()
+		self.response = response
+		self.header = {}
+		self.responseHeader = ''
+		self.responseData = ''
+		# TODO: read response header to dict :)
+		lines = response.split('\r\n')
+		for x in range(0,len(lines)):
+			parts = lines[x].split(' ')
+			if len(parts) > 1:
+				if parts[1].find(';') >= 0:
+					parts[1] = parts[1][:parts[1].find(';')]
+				self.header[parts[0]] = parts[1]
+			if lines[x] == '':
+				self.responseData = ''.join(lines[x+1:])
+				self.responseHeader += lines[x] + '\r\n'
+				break
+			self.responseHeader += lines[x] + '\r\n'
+
+	def hasContentType(self, value):
+		if not 'Content-Type:' in list(self.header.keys()):
+			return True
+		return self.header['Content-Type:'] == value
+
+	def deCompress(self):
+		if not 'Content-Encoding:' in list(self.header.keys()):
+			return
+		order = self.header['Content-Encoding:'] + ','
+		compresslist = order.split(' ')
+		compresslist = reversed(compresslist)
+		for x in compresslist:
+			if x == 'deflate,':
+				self.responseData = zlib.decompress(self.responseData)
+			elif x == 'gzip,':
+				self.responseData = zlib.decompress(self.responseData, 16+zlib.MAX_WBITS)
+
+	def compress(self):
+		if not 'Content-Encoding:' in list(self.header.keys()):
+			return
+		order = self.header['Content-Encoding:'] + ','
+		compresslist = order.split(' ')
+		for x in compresslist:
+			if x == 'deflate,':
+				self.responseData = zlib.compress(self.responseData)
+			elif x == 'gzip,':
+				out = StringIO.StringIO()
+				gzip.GzipFile(fileobj=out, mode="w").write(self.responseData.encode('utf-8'))
+				self.responseData = out.getvalue()
+
+	def injectNav(self, text):
+		soup = BeautifulSoup(self.responseData, 'html.parser')
+		new_tag = soup.new_tag('nav', id='MyFnavbar')
+		new_tag['class'] = new_tag.get('class', []) + ['navbar', 'fixed-top', 'bg-dark', 'text-white']
+		new_tag.string = '' + text
+		if soup.body is not None:
+			soup.body.insert(0, new_tag)
+			self.responseData = soup.prettify().encode('utf-8')
+
+	def getResponseText(self):
+		return self.responseHeader + self.responseData
+
 
 
 class ProxyServer(object):
 	def __init__(self, configFilePath):
 		super(ProxyServer, self).__init__()
-		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
-		logging.info('Proxy launched')
 		self.config = json.loads(open(configFilePath).read())
+		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
+		self.logger('Proxy launched')
 		try:
 			host = ''
 			self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-			logging.info('Creating server socket...')
+			self.logger('Creating server socket...')
 			self.s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			self.s.bind((host, self.config['port']))
-			logging.info('Binding socket to port %s...', self.config['port'])
+			self.logger('Binding socket to port %s...', self.config['port'])
 			self.s.listen(PENDINGNUM)
-			logging.info('Listening for incoming requests...\n')
+			self.logger('Listening for incoming requests...\n')
 			print self.config['restriction']
 			print "Proxy Server Running on ",host,":",self.config['port']
 		except socket.error, (value, message):
@@ -38,7 +104,6 @@ class ProxyServer(object):
 	def run(self):
 		while True:
 			conn, client_addr = self.s.accept()
-			print client_addr
 			thread.start_new_thread(self.proxyThread, (conn, client_addr))
 		self.s.close()
 
@@ -105,10 +170,18 @@ class ProxyServer(object):
 	def parseRequest():
 		pass
 
+	def logger(self, text, *args, **kwargs):
+		if self.config['logging']['enable']:
+			logging.info(text, *args, **kwargs)
+
 	def inject(self, response):
-		new_tag = soup.new_tag('nav', id='navbar')
-		new_tag['class'] = new_tag.get('class', []) + ['navbar', 'fixed-top', 'bg-dark']
-		soup.body.insert(1, new_tag)
+		current = Response(response)
+		if self.config['HTTPInjection']['enable'] and current.hasContentType('text/html'):
+			current.deCompress()
+			current.injectNav('' + self.config['HTTPInjection']['post']['body'].encode('utf-8'))
+			current.compress()
+			return current.getResponseText()
+		return response
 
 	def proxyThread(self, conn, client_addr):
 		while True:
@@ -117,19 +190,16 @@ class ProxyServer(object):
 				continue
 			lines = request.split('\r\n')
 			first_line = lines[0]
+			# print first_line
 			if self.config['restriction']['enable']:
 				for x in lines:
-					print x
 					if len(x.split(' ')) > 1:
 						header = x.split(' ')[0]
 						value = x.split(' ')[1]
 						for y in self.config['restriction']['targets']:
-							# print y['URL']
 							if header == 'Host:' and value == y['URL']:
 								if y['notify']:
-									self.sendMail(request)		
-								print '<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>'
-								print value
+									self.sendMail(request)
 								conn.close()
 								return
 
@@ -139,13 +209,18 @@ class ProxyServer(object):
 						header = lines[x].split(' ')[0]
 						if header == 'User-Agent:':
 							lines[x] = header + ' ' + self.config['privacy']['userAgent'].encode('utf-8')
+						if header == 'Proxy-Connection:':
+							lines[x] = ''
+							continue
 					lines[x] = lines[x] + '\r\n'
-					# print lines[x]
 			else:
 				for x in range(0,len(lines)):
+					if len(lines[x].split(' ')) > 0:
+						header = lines[x].split(' ')[0]
+						if header == 'Proxy-Connection:':
+							lines[x] = ''
+							continue
 					lines[x] = lines[x] + '\r\n'
-			# get url
-			print first_line
 			url = first_line.split(' ')[1]
 
 			http_pos = url.find("://")          # find pos of ://
@@ -161,12 +236,11 @@ class ProxyServer(object):
 			if webserver_pos == -1:
 				webserver_pos = len(temp)
 
-			# print temp[webserver_pos:]
 			version = first_line.split(' ')[2][:len(first_line.split(' ')[2])-1]+'0'
 			newRequest = first_line.split(' ')[0] + ' ' + temp[webserver_pos:] + ' ' + version + '\r\n'
 			newRequest = newRequest + ''.join(lines[1:])
-			print newRequest
-
+			# print newRequest
+			# print ''
 			webserver = ""
 			port = -1
 			if (port_pos==-1 or webserver_pos < port_pos):      # default port
@@ -180,31 +254,29 @@ class ProxyServer(object):
 				# create a socket to connect to the web server
 				s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
 				s.connect((webserver, port))
-				# print ("".join(request.split('\n')[1:]))
-				# s.send(request)         # send request to webserver
 				s.send(newRequest)
-				print '##############################################################'
+				res = ''
 				while 1:
 					# receive data from web server
 					data = s.recv(MAX_DATA_RECV)
-					print data
 					if (len(data) > 0):
-						# send to browser
-						conn.send(data)
+						res += data
 					else:
 						break
 				s.close()
-				print '##############################################################'
-				print first_line.split(' ')[2]
-				if first_line.split(' ')[2] == 'HTTP/1.0':
-					conn.close()
-					return
+				# if temp[webserver_pos:] == '/':
+				# 	print res
+				conn.send(self.inject(res))
+				# if first_line.split(' ')[2] == 'HTTP/1.0':
+				# 	conn.close()
+				# 	return
+				conn.close()
+				return
 			except socket.error, (value, message):
 				if s:
 					s.close()
 				if conn:
 					conn.close()
-				# self.printout("Peer Reset",first_line,client_addr)
 				sys.exit(1)    
 
 
