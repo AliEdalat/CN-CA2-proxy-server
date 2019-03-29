@@ -61,8 +61,12 @@ class Response(object):
 				self.responseData = zlib.compress(self.responseData)
 			elif x == 'gzip,':
 				out = StringIO.StringIO()
-				gzip.GzipFile(fileobj=out, mode="w").write(self.responseData.encode('utf-8'))
-				self.responseData = out.getvalue()
+				try:
+					gzip.GzipFile(fileobj=out, mode="w").write(self.responseData)
+					self.responseData = out.getvalue()
+				except Exception as e:
+					gzip.GzipFile(fileobj=out, mode="w").write(self.responseData.encode('utf-8'))
+					self.responseData = out.getvalue()
 
 	def injectNav(self, text):
 		soup = BeautifulSoup(self.responseData, 'html.parser')
