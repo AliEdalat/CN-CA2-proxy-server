@@ -49,7 +49,8 @@ class Response(object):
 			if x == 'deflate,':
 				self.responseData = zlib.decompress(self.responseData)
 			elif x == 'gzip,':
-				self.responseData = zlib.decompress(self.responseData, 16+zlib.MAX_WBITS)
+				# self.responseData = zlib.decompress(self.responseData, 16+zlib.MAX_WBITS)
+				self.responseData = gzip.GzipFile(fileobj=StringIO.StringIO(self.responseData)).read()
 
 	def compress(self):
 		if not 'Content-Encoding:' in list(self.header.keys()):
@@ -71,7 +72,7 @@ class Response(object):
 	def injectNav(self, text):
 		soup = BeautifulSoup(self.responseData, 'html.parser')
 		new_tag = soup.new_tag('nav', id='MyFnavbar')
-		new_tag['class'] = new_tag.get('class', []) + ['navbar', 'fixed-top', 'bg-dark', 'text-white']
+		new_tag['class'] = new_tag.get('class', []) + ['navbar', 'navbar-expand-lg', 'fixed-top', 'navbar-light', 'bg-light', 'shadow-sm']
 		new_tag.string = '' + text
 		if soup.body is not None:
 			soup.body.insert(0, new_tag)
