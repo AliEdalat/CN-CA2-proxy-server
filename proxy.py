@@ -81,13 +81,71 @@ class Response(object):
 	def getResponseText(self):
 		return self.responseHeader + self.responseData
 
+class Request(object):
+	def __init__(self, request, privacy, userAgent):
+		super(Request, self).__init__()
+		self.request = request
+		self.header = {}
+		lines = request.split('\r\n')
+		first_line = lines[0]
 
+		for x in range(0,len(lines)):
+			if len(lines[x].split(' ')) > 1:
+				header = lines[x].split(' ')[0]
+				value = lines[x].split(' ')[1]
+				if header == 'User-Agent:' and privacy:
+					lines[x] = header + ' ' + userAgent
+					value = userAgent
+				if header == 'Proxy-Connection:':
+					lines[x] = ''
+					continue
+				self.header[header] = value
+			lines[x] = lines[x] + '\r\n'
+
+		url = first_line.split(' ')[1]
+		http_pos = url.find("://")
+		if (http_pos==-1):
+			temp = url
+		else:
+			temp = url[(http_pos+3):]
+		port_pos = temp.find(":")
+		webserver_pos = temp.find("/")
+		if webserver_pos == -1:
+			webserver_pos = len(temp)
+		version = first_line.split(' ')[2][:len(first_line.split(' ')[2])-1]+'0'
+		self.newRequest = first_line.split(' ')[0] + ' ' + temp[webserver_pos:] + ' ' + version + '\r\n'
+		self.newRequest = self.newRequest + ''.join(lines[1:])
+		self.webserver = ""
+		self.port = -1
+		if (port_pos==-1 or webserver_pos < port_pos):
+			self.port = 80
+			self.webserver = temp[:webserver_pos]
+		else:
+			self.port = int((temp[(port_pos+1):])[:webserver_pos-port_pos-1])
+			self.webserver = temp[:port_pos]
+
+	def getNewRequest(self):
+		return self.newRequest
+
+	def getWebserver(self):
+		return self.webserver
+
+	def getPort(self):
+		return self.port
+
+	def getValue(self, key):
+		if not key in list(self.header.keys()):
+			return ''
+		return self.header[key]
+
+		
 
 class ProxyServer(object):
 	def __init__(self, configFilePath):
 		super(ProxyServer, self).__init__()
 		self.config = json.loads(open(configFilePath).read())
-		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
+		# TODO: add thread number with %(threadName)s to format
+		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(threadName)s %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
 		self.logger('Proxy launched')
 		try:
 			host = ''
@@ -109,6 +167,7 @@ class ProxyServer(object):
 	def run(self):
 		while True:
 			conn, client_addr = self.s.accept()
+			self.logger('Accepted a request from client!')
 			thread.start_new_thread(self.proxyThread, (conn, client_addr))
 		self.s.close()
 
@@ -121,16 +180,16 @@ class ProxyServer(object):
 		clientSocket.connect(mailserver)
 		recv = clientSocket.recv(1024)
 		recv = recv.decode()
-		print("Message after connection request:" + recv)
+		self.logger("Message after connection request:" + recv)
 		if recv[:3] != '220':
-			print('220 reply not received from server.')
+			self.logger('220 reply not received from server.')
 		heloCommand = 'EHLO mailtrap.com\r\n'
 		clientSocket.send(heloCommand.encode())
 		recv1 = clientSocket.recv(1024)
 		recv1 = recv1.decode()
-		print("Message after EHLO command:" + recv1)
+		self.logger("Message after EHLO command:" + recv1)
 		if recv1[:3] != '250':
-			print('250 reply not received from server.')
+			self.logger('250 reply not received from server.')
 
 		#Info for username and password
 		username = "29bdcadbf25359"
@@ -140,23 +199,23 @@ class ProxyServer(object):
 		authMsg = "AUTH PLAIN ".encode()+base64_str+"\r\n".encode()
 		clientSocket.send(authMsg)
 		recv_auth = clientSocket.recv(1024)
-		print(recv_auth.decode())
+		self.logger(recv_auth.decode())
 
 		mailFrom = "MAIL FROM:<test@mailtrap.com>\r\n"
 		clientSocket.send(mailFrom.encode())
 		recv2 = clientSocket.recv(1024)
 		recv2 = recv2.decode()
-		print("After MAIL FROM command: "+recv2)
+		self.logger("After MAIL FROM command: "+recv2)
 		rcptTo = "RCPT TO:<ali.edalat@ut.ac.ir>\r\n"
 		clientSocket.send(rcptTo.encode())
 		recv3 = clientSocket.recv(1024)
 		recv3 = recv3.decode()
-		print("After RCPT TO command: "+recv3)
+		self.logger("After RCPT TO command: "+recv3)
 		data = "DATA\r\n"
 		clientSocket.send(data.encode())
 		recv4 = clientSocket.recv(1024)
 		recv4 = recv4.decode()
-		print("After DATA command: "+recv4)
+		self.logger("After DATA command: "+recv4)
 		subject = "Subject: testing my client\r\n\r\n" 
 		clientSocket.send(subject.encode())
 		date = time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime())
@@ -165,15 +224,12 @@ class ProxyServer(object):
 		clientSocket.send(msg.encode())
 		clientSocket.send(endmsg.encode())
 		recv_msg = clientSocket.recv(1024)
-		print("Response after sending message body:"+recv_msg.decode())
+		self.logger("Response after sending message body:"+recv_msg.decode())
 		quit = "QUIT\r\n"
 		clientSocket.send(quit.encode())
 		recv5 = clientSocket.recv(1024)
-		print(recv5.decode())
+		self.logger(recv5.decode())
 		clientSocket.close()
-
-	def parseRequest():
-		pass
 
 	def logger(self, text, *args, **kwargs):
 		if self.config['logging']['enable']:
@@ -193,73 +249,29 @@ class ProxyServer(object):
 			request = conn.recv(MAX_DATA_RECV)
 			if not request:
 				continue
-			lines = request.split('\r\n')
-			first_line = lines[0]
-			# print first_line
+			self.logger('Client sent request to proxy with headers:')
+			self.logger('connect to [127.0.0.1] from localhost [%s] %s', client_addr[0], client_addr[1])
+			self.logger('\n----------------------------------------------------------------------\n' + request +\
+				'\n----------------------------------------------------------------------\n')
+
+			currentRequest = Request(request, self.config['privacy']['enable'], self.config['privacy']['userAgent'].encode('utf-8'))
 			if self.config['restriction']['enable']:
-				for x in lines:
-					if len(x.split(' ')) > 1:
-						header = x.split(' ')[0]
-						value = x.split(' ')[1]
-						for y in self.config['restriction']['targets']:
-							if header == 'Host:' and value == y['URL']:
-								if y['notify']:
-									self.sendMail(request)
-								conn.close()
-								return
-
-			if self.config['privacy']['enable']:
-				for x in range(0,len(lines)):
-					if len(lines[x].split(' ')) > 0:
-						header = lines[x].split(' ')[0]
-						if header == 'User-Agent:':
-							lines[x] = header + ' ' + self.config['privacy']['userAgent'].encode('utf-8')
-						if header == 'Proxy-Connection:':
-							lines[x] = ''
-							continue
-					lines[x] = lines[x] + '\r\n'
-			else:
-				for x in range(0,len(lines)):
-					if len(lines[x].split(' ')) > 0:
-						header = lines[x].split(' ')[0]
-						if header == 'Proxy-Connection:':
-							lines[x] = ''
-							continue
-					lines[x] = lines[x] + '\r\n'
-			url = first_line.split(' ')[1]
-
-			http_pos = url.find("://")          # find pos of ://
-			if (http_pos==-1):
-				temp = url
-			else:
-				temp = url[(http_pos+3):]       # get the rest of url
-		    
-			port_pos = temp.find(":")           # find the port pos (if any)
-
-			# find end of web server
-			webserver_pos = temp.find("/")
-			if webserver_pos == -1:
-				webserver_pos = len(temp)
-
-			version = first_line.split(' ')[2][:len(first_line.split(' ')[2])-1]+'0'
-			newRequest = first_line.split(' ')[0] + ' ' + temp[webserver_pos:] + ' ' + version + '\r\n'
-			newRequest = newRequest + ''.join(lines[1:])
-			# print newRequest
-			# print ''
-			webserver = ""
-			port = -1
-			if (port_pos==-1 or webserver_pos < port_pos):      # default port
-				port = 80
-				webserver = temp[:webserver_pos]
-			else:       # specific port
-				port = int((temp[(port_pos+1):])[:webserver_pos-port_pos-1])
-				webserver = temp[:port_pos]
+				for y in self.config['restriction']['targets']:
+					if currentRequest.getValue('Host:') == y['URL']:
+						if y['notify']:
+							self.sendMail(request)
+						conn.close()
+						return
 
 			try:
 				# create a socket to connect to the web server
 				s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
-				s.connect((webserver, port))
-				s.send(newRequest)
+				s.connect((currentRequest.getWebserver(), currentRequest.getPort()))
+				self.logger('Proxy opening connection to server %s [%s]... Connection opened.', currentRequest.getWebserver(), socket.gethostbyname(currentRequest.getWebserver()))
+				s.send(currentRequest.getNewRequest())
+				self.logger('Proxy sent request to server [%s] with headers:', currentRequest.getWebserver())
+				self.logger('\n----------------------------------------------------------------------\n' + currentRequest.getNewRequest() +\
+				'\n----------------------------------------------------------------------\n')
 				res = ''
 				while 1:
 					# receive data from web server
@@ -269,9 +281,16 @@ class ProxyServer(object):
 					else:
 						break
 				s.close()
+				self.logger('Server [%s] sent response to proxy with headers:', currentRequest.getWebserver())
+				self.logger('\n----------------------------------------------------------------------\n' + res +\
+				'\n----------------------------------------------------------------------\n')
 				# if temp[webserver_pos:] == '/':
 				# 	print res
-				conn.send(self.inject(res))
+				newRes = self.inject(res)
+				conn.send(newRes)
+				self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
+				self.logger('\n----------------------------------------------------------------------\n' + newRes +\
+				'\n----------------------------------------------------------------------\n')
 				# if first_line.split(' ')[2] == 'HTTP/1.0':
 				# 	conn.close()
 				# 	return
