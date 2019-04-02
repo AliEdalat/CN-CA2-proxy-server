@@ -1,4 +1,5 @@
 import thread
+import threading
 import socket
 import json
 import sys
@@ -144,6 +145,9 @@ class ProxyServer(object):
 	def __init__(self, configFilePath):
 		super(ProxyServer, self).__init__()
 		self.config = json.loads(open(configFilePath).read())
+		self.users = {}
+		self.lock = threading.Lock()
+		self.fillUsers()
 		# TODO: add thread number with %(threadName)s to format
 		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(threadName)s %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
 		self.logger('Proxy launched')
@@ -163,6 +167,10 @@ class ProxyServer(object):
 				self.s.close()
 			print "Could not open socket:", message
 			sys.exit(1)
+
+	def fillUsers(self):
+		for x in self.config['accounting']['users']:
+			self.users[x['IP']] = int(x['volume'])
 
 	def run(self):
 		while True:
@@ -246,6 +254,12 @@ class ProxyServer(object):
 
 	def proxyThread(self, conn, client_addr):
 		while True:
+			if not client_addr[0] in list(self.users.keys()):
+				conn.close()
+				return
+			if self.users[client_addr[0]] <= 0:
+				conn.close()
+				return
 			request = conn.recv(MAX_DATA_RECV)
 			if not request:
 				continue
@@ -286,6 +300,11 @@ class ProxyServer(object):
 				'\n----------------------------------------------------------------------\n')
 				# if temp[webserver_pos:] == '/':
 				# 	print res
+				self.lock.acquire()
+				try:
+					self.users[client_addr[0]] -= len(res)
+				finally:
+					self.lock.release()
 				newRes = self.inject(res)
 				conn.send(newRes)
 				self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
