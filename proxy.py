@@ -83,6 +83,9 @@ class Response(object):
 	def getResponseText(self):
 		return self.responseHeader + self.responseData
 
+	def isCachable(self):
+		return 'Pragma' not in self.header or self.header['Pragma'] == 'no-cache'
+
 class Request(object):
 	def __init__(self, request, privacy, userAgent):
 		super(Request, self).__init__()
@@ -106,6 +109,7 @@ class Request(object):
 			lines[x] = lines[x] + '\r\n'
 
 		url = first_line.split(' ')[1]
+		self.url = url
 		http_pos = url.find("://")
 		if (http_pos==-1):
 			temp = url
@@ -140,6 +144,9 @@ class Request(object):
 		if not key in list(self.header.keys()):
 			return ''
 		return self.header[key]
+	
+	def getUrl(self):
+		return self.url
 
 class LRUCache:
 	def __init__(self, size):
@@ -313,7 +320,10 @@ class ProxyServer(object):
 						conn.close()
 						return
 			if self.caching:
-				cacheRes = self.findInCache(currentRequest.getWebserver())
+				cacheRes = self.findInCache(currentRequest.getUrl())
+			print currentRequest.getUrl()
+			# print cacheRes
+			print "***********"
 			try:
 				if not self.caching or not cacheRes:
 					sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
@@ -343,8 +353,11 @@ class ProxyServer(object):
 					response = Response(res)
 					newRes = self.inject(response)
 					conn.send(newRes)
-					if self.caching:
-						self.cache.add(currentRequest.getWebserver(), newRes)
+					if self.caching and response.isCachable():
+						self.cache.add(currentRequest.getUrl(), newRes)
+					# print ">>>>>>>>>>>"
+					# print self.cache.cache
+					# print "<<<<<<<<<<<"
 					self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
 					self.logger('\n----------------------------------------------------------------------\n' + newRes +\
 					'\n----------------------------------------------------------------------\n')

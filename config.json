@@ -20,6 +20,10 @@
     "enable": true,
     "targets": [
       {
+        "URL": "sib.ir",
+        "notify": "true"
+      },
+      {
         "URL": "acm.ut.ac.ir",
         "notify": "false"
       }
