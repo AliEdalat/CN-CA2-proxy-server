@@ -203,7 +203,6 @@ class ProxyServer(object):
 			print "Could not open socket:", message
 			sys.exit(1)
 
-
 	def fillUsers(self):
 		for x in self.config['accounting']['users']:
 			self.users[x['IP']] = int(x['volume'])
