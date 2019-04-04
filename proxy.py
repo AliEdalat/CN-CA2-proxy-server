@@ -11,9 +11,10 @@ import gzip
 import StringIO
 from bs4 import BeautifulSoup
 import collections
-
+from datetime import datetime
+#********* CONSTANT VARIABLES *********
 PENDINGNUM = 50 # how many pending connections queue will hold
-MAX_DATA_RECV = 999999999  # max number of bytes we receive at once
+MAX_DATA_RECV = 999999  # max number of bytes we receive at once
 
 class Response(object):
 	def __init__(self, response):
@@ -71,6 +72,11 @@ class Response(object):
 					gzip.GzipFile(fileobj=out, mode="w").write(self.responseData.encode('utf-8'))
 					self.responseData = out.getvalue()
 
+		# print self.responseData
+		# print self.responseHeader
+		self.updateContentLen()
+		# print self.responseHeader
+
 	def injectNav(self, text):
 		soup = BeautifulSoup(self.responseData, 'html.parser')
 		new_tag = soup.new_tag('nav', id='MyFnavbar')
@@ -80,11 +86,35 @@ class Response(object):
 			soup.body.insert(0, new_tag)
 			self.responseData = soup.prettify().encode('utf-8')
 
+	def updateContentLen(self):
+		self.responseHeader = ''
+		lines = self.response.split('\r\n')
+		for x in range(0,len(lines)):
+			parts = lines[x].split(' ')
+			if len(parts) > 1:
+				if parts[0] == 'Content-Length:':
+					lines[x] = parts[0] + ' ' + str(len(self.responseData))
+			if lines[x] == '':
+				self.responseHeader += lines[x] + '\r\n'
+				break
+			self.responseHeader += lines[x] + '\r\n'
+
+
 	def getResponseText(self):
 		return self.responseHeader + self.responseData
 
 	def isCachable(self):
 		return 'Pragma' not in self.header or self.header['Pragma'] == 'no-cache'
+
+	def getExpireDate(self):
+		if 'Expires' in self.header:
+			return self.header['Expires']
+		else:
+			timestamp = time.time()
+			return time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime(timestamp))
+	
+def stringToTimeConverter(timeStr):
+	return datetime.strptime(timeStr, '%a, %d %b %Y %H:%M:%S GMT')
 
 class Request(object):
 	def __init__(self, request, privacy, userAgent):
@@ -95,10 +125,9 @@ class Request(object):
 		first_line = lines[0]
 
 		for x in range(0,len(lines)):
-			line_parts = lines[x].split(' ')
-			if len(line_parts) > 1:
-				header = line_parts[0]
-				value = line_parts[1]
+			if len(lines[x].split(' ')) > 1:
+				header = lines[x].split(' ')[0]
+				value = lines[x].split(' ')[1]
 				if header == 'User-Agent:' and privacy:
 					lines[x] = header + ' ' + userAgent
 					value = userAgent
@@ -144,9 +173,14 @@ class Request(object):
 		if not key in list(self.header.keys()):
 			return ''
 		return self.header[key]
-	
+
 	def getUrl(self):
 		return self.url
+
+	def makeIfSinceReq(self, expTime):
+		if 'If-Modified-Since:' not in self.header:
+			self.newRequest = self.newRequest[0:-4] + "If-Modified-Since: " + expTime + '\r\n'
+		return self.newRequest 
 
 class LRUCache:
 	def __init__(self, size):
@@ -159,7 +193,7 @@ class LRUCache:
 			self.updateLRU(self.cache.keys().index(key))
 			return self.cache.get(key)
 		else:
-			return False
+			return False, False
 
 	def findLRUIndex(self):
 		for i in range(self.size):
@@ -179,6 +213,8 @@ class LRUCache:
 			self.lru[i] = self.lru[i]-1
 		self.lru[index] = self.size-1
 
+		
+
 class ProxyServer(object):
 	def __init__(self, configFilePath):
 		super(ProxyServer, self).__init__()
@@ -187,8 +223,7 @@ class ProxyServer(object):
 		self.lock = threading.Lock()
 		self.fillUsers()
 		# TODO: add thread number with %(threadName)s to format
-		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(threadName)s %(message)s',
-							datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
+		logging.basicConfig(filename='myproxy.log', format='[%(asctime)s] %(threadName)s %(message)s', datefmt='%d/%b/%Y:%H:%M:%S', level=logging.DEBUG)
 		self.logger('Proxy launched')
 		self.caching = self.config['caching']['enable']
 		if self.caching:
@@ -202,10 +237,10 @@ class ProxyServer(object):
 			self.logger('Binding socket to port %s...', self.config['port'])
 			self.sock.listen(PENDINGNUM)
 			self.logger('Listening for incoming requests...\n')
-			# print self.config['restriction']
+			print self.config['restriction']
 			print "Proxy Server Running on ",host,":",self.config['port']
 		except socket.error, (value, message):
-			if self.sock:
+			if self.s:
 				self.sock.close()
 			print "Could not open socket:", message
 			sys.exit(1)
@@ -285,12 +320,14 @@ class ProxyServer(object):
 		if self.config['logging']['enable']:
 			logging.info(text, *args, **kwargs)
 
-	def inject(self, response):
-		if self.config['HTTPInjection']['enable'] and response.hasContentType('text/html'):
-			response.deCompress()
-			response.injectNav('' + self.config['HTTPInjection']['post']['body'].encode('utf-8'))
-			response.compress()
-		return response.getResponseText()
+	def inject(self, response, current):
+		# current = Response(response)
+		if self.config['HTTPInjection']['enable'] and current.hasContentType('text/html'):
+			current.deCompress()
+			current.injectNav('' + self.config['HTTPInjection']['post']['body'].encode('utf-8'))
+			current.compress()
+			return current.getResponseText()
+		return response
 
 	def findInCache(self, key):
 		return self.cache.find(key)
@@ -310,8 +347,8 @@ class ProxyServer(object):
 			self.logger('connect to [127.0.0.1] from localhost [%s] %s', client_addr[0], client_addr[1])
 			self.logger('\n----------------------------------------------------------------------\n' + request +\
 				'\n----------------------------------------------------------------------\n')
-			currentRequest = Request(request, self.config['privacy']['enable'], 
-									self.config['privacy']['userAgent'].encode('utf-8'))
+
+			currentRequest = Request(request, self.config['privacy']['enable'], self.config['privacy']['userAgent'].encode('utf-8'))
 			if self.config['restriction']['enable']:
 				for y in self.config['restriction']['targets']:
 					if currentRequest.getValue('Host:') == y['URL']:
@@ -320,22 +357,22 @@ class ProxyServer(object):
 						conn.close()
 						return
 			if self.caching:
-				cacheRes = self.findInCache(currentRequest.getUrl())
+				cacheRes , cacheTime = self.findInCache(currentRequest.getUrl())
 			print currentRequest.getUrl()
-			# print cacheRes
 			print "***********"
 			try:
 				if not self.caching or not cacheRes:
+					# create a socket to connect to the web server
 					sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
 					sock.connect((currentRequest.getWebserver(), currentRequest.getPort()))
-					self.logger('Proxy opening connection to server %s [%s]... Connection opened.',
-								currentRequest.getWebserver(), socket.gethostbyname(currentRequest.getWebserver()))
+					self.logger('Proxy opening connection to server %s [%s]... Connection opened.', currentRequest.getWebserver(), socket.gethostbyname(currentRequest.getWebserver()))
 					sock.send(currentRequest.getNewRequest())
 					self.logger('Proxy sent request to server [%s] with headers:', currentRequest.getWebserver())
 					self.logger('\n----------------------------------------------------------------------\n' + currentRequest.getNewRequest() +\
 					'\n----------------------------------------------------------------------\n')
 					res = ''
-					while True:
+					while 1:
+						# receive data from web server
 						data = sock.recv(MAX_DATA_RECV)
 						if (len(data) > 0):
 							res += data
@@ -345,39 +382,83 @@ class ProxyServer(object):
 					self.logger('Server [%s] sent response to proxy with headers:', currentRequest.getWebserver())
 					self.logger('\n----------------------------------------------------------------------\n' + res +\
 					'\n----------------------------------------------------------------------\n')
+					# if temp[webserver_pos:] == '/':
+					# 	print res
 					self.lock.acquire()
 					try:
 						self.users[client_addr[0]] -= len(res)
 					finally:
 						self.lock.release()
 					response = Response(res)
-					newRes = self.inject(response)
+					newRes = self.inject(res, response)
 					conn.send(newRes)
-					if self.caching and response.isCachable():
-						self.cache.add(currentRequest.getUrl(), newRes)
-					# print ">>>>>>>>>>>"
-					# print self.cache.cache
-					# print "<<<<<<<<<<<"
 					self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
 					self.logger('\n----------------------------------------------------------------------\n' + newRes +\
 					'\n----------------------------------------------------------------------\n')
+					# if first_line.split(' ')[2] == 'HTTP/1.0':
+					# 	conn.close()
+					# 	return
+					expireDate = response.getExpireDate()
+					if self.caching and response.isCachable():
+						self.cache.add(currentRequest.getUrl(), (newRes, expireDate))
 					conn.close()
 					return
 				else:
-					conn.send(cacheRes)
-					self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
-					self.logger('\n----------------------------------------------------------------------\n' + cacheRes +\
-					'\n----------------------------------------------------------------------\n')
-					conn.close()
-					return
+					if stringToTimeConverter(cacheTime) > datetime.now():
+						conn.send(cacheRes)
+						self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
+						self.logger('\n----------------------------------------------------------------------\n' + cacheRes +\
+						'\n----------------------------------------------------------------------\n')
+						conn.close()
+						return
+					else:
+						sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
+						sock.connect((currentRequest.getWebserver(), currentRequest.getPort()))
+						self.logger('Proxy opening connection to server %s [%s]... Connection opened.',
+									currentRequest.getWebserver(), socket.gethostbyname(currentRequest.getWebserver()))
+						sock.send(currentRequest.makeIfSinceReq(cacheTime))
+						self.logger('Proxy sent if modified since request to server [%s] with headers:', currentRequest.getWebserver())
+						self.logger('\n----------------------------------------------------------------------\n' + currentRequest.getNewRequest() +\
+						'\n----------------------------------------------------------------------\n')
+						res = ''
+						while True:
+							data = sock.recv(MAX_DATA_RECV)
+							if (len(data) > 0):
+								res += data
+							else:
+								break
+						sock.close()
+						self.logger('Server [%s] sent response to proxy with headers:', currentRequest.getWebserver())
+						self.logger('\n----------------------------------------------------------------------\n' + res +\
+						'\n----------------------------------------------------------------------\n')
+						response = Response(res)
+						print ">>>>>>>"
+						print response.getResponseText()
+						print "<<<<<<<"
+						if response.header['Status Code'] == '304 Not Modified':
+							conn.send(cacheRes)
+							self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
+							self.logger('\n----------------------------------------------------------------------\n' + cacheRes +\
+							'\n----------------------------------------------------------------------\n')
+							conn.close()
+							return
+						else:
+							newRes = self.inject(response)
+							conn.send(newRes)
+							expireDate = response.getExpireDate()
+							if self.caching and response.isCachable():
+								self.cache.add(currentRequest.getUrl(), (newRes, expireDate))
+							self.logger('Proxy sent response to client [%s] port: %s with headers:', client_addr[0], client_addr[1])
+							self.logger('\n----------------------------------------------------------------------\n' + newRes +\
+							'\n----------------------------------------------------------------------\n')
+							conn.close()
+							return
 			except socket.error, (value, message):
 				if sock:
 					sock.close()
 				if conn:
 					conn.close()
 				sys.exit(1)
-			
-
 
 proxy = ProxyServer('config.json')
 proxy.run()
