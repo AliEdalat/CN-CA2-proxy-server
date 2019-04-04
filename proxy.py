@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 import collections
 
 PENDINGNUM = 50 # how many pending connections queue will hold
-MAX_DATA_RECV = 999999  # max number of bytes we receive at once
+MAX_DATA_RECV = 999999999  # max number of bytes we receive at once
 
 class Response(object):
 	def __init__(self, response):
